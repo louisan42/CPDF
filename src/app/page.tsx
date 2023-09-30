@@ -1,8 +1,11 @@
 import { Button } from "@/components/ui/button";
 import { UserButton, auth } from "@clerk/nextjs";
+import { LogIn } from "lucide-react";
+import Link from "next/link";
+
 
 export default async function Home() {
-  const { userId } = await auth;
+  const { userId } = await auth();
   const isAuth = !!userId;
   return (
     <div className="w-screen min-h-screen bg-[conic-gradient(at_top_right,_var(--tw-gradient-stops))] from-rose-100 to-teal-100">
@@ -16,6 +19,18 @@ export default async function Home() {
             {isAuth && <Button>Go to Chats</Button>}
           </div>
           <p className="max-w-xxl mt-1 text-lg text-slate-600">Join millions of students, researchers and professionals embracing AI</p>
+          <div className="w-full mt-4">
+            {isAuth ? (
+              <h1>File upload</h1>
+            ): (
+              <Link href="/sign-in">
+                <Button>Login to get started
+                <LogIn className="w-4 h-4 ml-2"/>
+
+                </Button>
+              </Link>
+            )}
+          </div>
         </div>
       </div>
     </div>
