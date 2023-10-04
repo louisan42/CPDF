@@ -1,6 +1,6 @@
 import AWS from 'aws-sdk';
-import * as dotenv from 'dotenv';
-dotenv.config({ path: ".env" });
+// import * as dotenv from 'dotenv';
+// dotenv.config({ path: ".env" });
 
 
 export async function uploadToS3(file:File) {
