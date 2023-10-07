@@ -1,17 +1,26 @@
-import { Pinecone } from "@pinecone-database/pinecone"
+import { Pinecone, Vector, utils as PineconeUtils, PineconeRecord, RecordMetadata } from "@pinecone-database/pinecone"
 import { downloadfromS3 } from "./s3-server";
 import { PDFLoader } from "langchain/document_loaders/fs/pdf";
 import {Document, RecursiveCharacterTextSplitter} from '@pinecone-database/doc-splitter'
+import { getEmbeddings } from "./embeddings";
+import md5 from 'md5';
+import { convertToAscii } from "./utils";
+import * as itertools from "itertools";
 
-//let pinecone : Pinecone | null = null;
+let pinecone : Pinecone | null = null;
 
 export const getPinecone = async () => {
-    
-        const pinecone = new Pinecone({
+    if (!pinecone) {
+        pinecone = new Pinecone({
             apiKey: process.env.PINECONE_API_KEY!,
             environment: process.env.PINECONE_ENVIRONMENT!,    
-    });
-    return await pinecone.listIndexes();
+    });}
+
+     if (process.env.NODE_ENV != 'production') {
+        console.log('pinecone: ', pinecone.listIndexes())
+    }; 
+    
+    return pinecone;
 
 }
 
@@ -22,10 +31,19 @@ type PDFPage = {
     }
 }
 
+function* chunks<T>(iterator: Iterator<T>, batch_size = 10): Generator<T[]> {
+    const it: Iterable<T> = { [Symbol.iterator]: () => iterator };
+    let chunk = Array.from(itertools.islice(it, batch_size));
+    while (chunk.length) {
+        yield chunk as T[];
+        chunk = Array.from(itertools.islice(it, batch_size));
+    }
+}
+
 export async function loadS3IntoPinecone (file_key :string) {
     // obtain pdf -> download and read
     console.log('downloading from s3 to file system');
-    const file_name = await downloadfromS3(file_key);
+    const file_name = await downloadfromS3(file_key);                                                         
     if (!file_name) {
         throw new Error('Could not download file from S3');
     }
@@ -33,11 +51,52 @@ export async function loadS3IntoPinecone (file_key :string) {
     const pages = await loader.load() as PDFPage[];
 
     // split and segment pdf  into smaller docs
-    const document = await Promise.all(pages.map(prepareDocument));
+    const documents = await Promise.all(pages.map(prepareDocument));
 
     //vectorized and embed individual documents
 
-    return pages;
+    const vectors = await Promise.all(documents.flat().map(embedDocument));
+
+    // upload to pinecone
+    const client = await getPinecone();
+    const pineconeIndex = client.Index('chatpdf');
+
+    console.log('inserting vectors into pinecone');
+    const asciiKey = convertToAscii(file_key);
+    const namespace = pineconeIndex.namespace(asciiKey);
+
+    // PineconeUtils.chunkedUpsert(pineconeIndex, vectors, namespace, 10);
+    for (const chunk of chunks(vectors.values(), 10)) {
+
+        console.log('inserting chunk into pinecone', chunk);
+        await pineconeIndex.upsert(chunk as PineconeRecord<RecordMetadata>[]);
+
+    }
+
+    const stats = await client.index('chatpdf').describeIndexStats();
+    console.log('stats: ', stats);
+
+    return documents[0];
+}
+
+async function embedDocument(doc:Document) {
+   try {
+        const embeddings = await getEmbeddings(doc.pageContent);
+        const hash = md5(doc.pageContent);
+
+        return {
+            id: hash,
+            values: embeddings,
+            metadata: {
+                pageNumber: doc.metadata.pageNumber,
+                text: doc.metadata.text
+            }
+        } as PineconeRecord;
+
+   } catch (error) {
+    console.log("Error embedding document", error);
+    throw error;
+   }
 }
 
 export const truncateStringByBytes = (str: string, numBytes: number) => {
